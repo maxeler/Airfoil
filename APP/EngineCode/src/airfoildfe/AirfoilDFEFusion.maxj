@@ -1,0 +1,154 @@
+package airfoildfe;
+
+import maxpower.kernel.io.VariableWidthIO;
+
+import com.maxeler.maxcompiler.v2.kernelcompiler.Kernel;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelLib;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEVar;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStruct;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStructType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVector;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVectorType;
+import com.maxeler.maxcompiler.v2.utils.MathUtils;
+
+public class AirfoilDFEFusion{
+
+	public static DFEVector<DFEStruct> fuseInputs(AirfoilDFEUtils utils, DFEVector<DFEStruct> scheds){
+
+		Kernel owner = scheds.getKernel();
+
+		int nScheds = scheds.getSize();
+		DFEType schedIndexType = Kernel.dfeUInt(MathUtils.bitsToRepresent(nScheds));
+		DFEVectorType<DFEVar> hotVectorType = new DFEVectorType<DFEVar>(Kernel.dfeBool(),nScheds);
+
+		DFEStructType dataType = utils.getAdtToResDataStructType();
+		DFEVectorType<DFEStruct> dataVectorType = new DFEVectorType<DFEStruct>(dataType, nScheds);
+		DFEVectorType<DFEStruct> buffSchedVectorType = new DFEVectorType<DFEStruct>(utils.getResBufferScheduleType(),nScheds);
+
+		DFEVar pcieCount = owner.constant.zero(schedIndexType);
+		DFEVar bufferPullCount = owner.constant.zero(schedIndexType);
+		DFEVector<DFEVar> pcieHotVector = hotVectorType.newInstance(owner);
+		DFEVector<DFEVar> bufferWriteHotVector = hotVectorType.newInstance(owner);
+		DFEVector<DFEStruct> bufferScheds = buffSchedVectorType.newInstance(owner);
+		for (int i = 0; i < nScheds; i++){
+			DFEVar thisInputSelectCommand = scheds[i][AirfoilDFEUtils.inputSelectTag];
+			DFEStruct thisBufferCommand = scheds[i][AirfoilDFEUtils.bufferCommandTag];
+			bufferScheds[i] <== thisBufferCommand;
+			DFEVar thisCommandPulls = thisBufferCommand[MultiBankBuffer.writeAccessTag];
+
+			pcieCount = (thisInputSelectCommand === AirfoilDFEUtils.InputSelectCommand.READ_PCIE) ?
+			                                        (pcieCount + 1) : pcieCount;
+			bufferPullCount = (thisInputSelectCommand === AirfoilDFEUtils.InputSelectCommand.READ_BUFFER) & thisCommandPulls ?
+			                                              (bufferPullCount + 1) : bufferPullCount;
+
+
+			pcieHotVector[i] <== (thisInputSelectCommand === AirfoilDFEUtils.InputSelectCommand.READ_PCIE) ?
+			                                                 owner.constant.var(true) : owner.constant.var(false);
+			bufferWriteHotVector[i] <== (thisInputSelectCommand === AirfoilDFEUtils.InputSelectCommand.READ_BUFFER) & thisCommandPulls ?
+					                                                owner.constant.var(true) : owner.constant.var(false);
+		}
+
+		DFEVector<DFEStruct> pcieinputqpadts = VariableWidthIO.input("cpuqpadt", dataVectorType, pcieCount, utils.getQpadtPortWidthInBytes()*8, owner.constant.var(false));
+		DFEVector<DFEStruct> pcieqpadts = NHotMux.demux(pcieHotVector, pcieinputqpadts, pcieCount);
+
+		DFEVector<DFEStruct> lmeminputqpadts = VariableWidthIO.input("adtqpadt", dataVectorType, bufferPullCount, utils.getAdtToResDataStructType().getTotalBits()*nScheds, owner.constant.var(false));
+		DFEVector<DFEStruct> lmemqpadts = NHotMux.demux(bufferWriteHotVector, lmeminputqpadts, bufferPullCount);
+
+		MultiBankBuffer<DFEStruct> inputBuffer = new MultiBankBuffer<DFEStruct>(owner, utils.getAdtToResDataStructType(), utils.getNumBuff(), utils.getBuffDepth());
+		DFEVector<DFEStruct> bufferqpadts = inputBuffer.port(lmemqpadts, bufferScheds);
+
+		DFEVector<DFEStruct> output = dataVectorType.newInstance(owner);
+		for (int i = 0; i < nScheds; i++) {
+			output[i] <== pcieHotVector[i] ? pcieqpadts[i] : bufferqpadts[i];
+		}
+		return output;
+	}
+
+	public static void fanOutputs(DFEVector<DFEStruct> data, DFEVector<DFEStruct> passedInput, AirfoilDFEUtils utils, DFEVector<DFEStruct> scheds, DFEVector<DFEStruct> flushingOutScheds) {
+
+		Kernel owner = scheds.getKernel();
+		int nScheds = scheds.getSize();
+		int nFlushScheds = flushingOutScheds.getSize();
+		DFEType schedIndexType = Kernel.dfeUInt(MathUtils.bitsToRepresent(nScheds));
+		DFEType flushOutSchedIndexType = Kernel.dfeUInt(MathUtils.bitsToRepresent(nFlushScheds));
+
+		DFEVar nTicks = owner.io.scalarInput("nTicks", KernelLib.dfeUInt(32));
+		DFEVar counter = owner.control.count.makeCounterChain().addCounter(nTicks,1);
+		DFEVar doFlush = counter === (nTicks-1);
+
+		// Accumulate and output the things added to flushing buffer at least one cycle previously
+		DFEVectorType<DFEStruct> flushDataType = new DFEVectorType<DFEStruct>(utils.getResToUpdateDataStructType(),4);
+		MultiBankBuffer<DFEVector<DFEStruct>> flushingBuffer = new MultiBankBuffer<DFEVector<DFEStruct>>(owner, flushDataType, utils.getNumFlushBuff(), utils.getFlushBuffDepth(), false);
+		DFEVector<DFEVector<DFEStruct>> flushingBufferOutput = flushingBuffer.read(flushingOutScheds);
+
+		DFEVectorType<DFEStruct> flushInVectorType = new DFEVectorType<DFEStruct>(utils.getResToUpdateDataStructType(), nFlushScheds);
+		DFEVector<DFEStruct> lmemResOutput = flushInVectorType.newInstance(owner);
+		for (int i = 0; i < nFlushScheds; i++){
+			DFEVector<DFEVar> thisData = owner.constant.zero(new DFEVectorType<DFEVar>(utils.getFloatType(),4));
+			for (int j = 0; j < 4; j++){
+				DFEStruct thisStructToAdd = flushingBufferOutput[i][j];
+				DFEVector<DFEVar> thisDataToAdd = thisStructToAdd["res"];
+				thisData = thisData + thisDataToAdd;
+			}
+			DFEStruct thisOutputStruct = utils.getResToUpdateDataStructType().newInstance(owner);
+			thisOutputStruct["res"] <== thisData;
+			thisOutputStruct["adt"] <== flushingBufferOutput[i][0]["adt"];
+
+			lmemResOutput[i] <== thisOutputStruct;
+		}
+
+		DFEVectorType<DFEVar> flushOutHotVectorType = new DFEVectorType<DFEVar>(Kernel.dfeBool(),nFlushScheds);
+		DFEVar flushOutCount = owner.constant.zero(flushOutSchedIndexType);
+		DFEVector<DFEVar> flushOutHotVector = flushOutHotVectorType.newInstance(owner);
+		flushingBuffer.read(flushingOutScheds);
+		for (int i = 0; i < nFlushScheds; i++){
+			DFEVar thisCommandFlushes = flushingOutScheds[i][MultiBankBuffer.readAccessTag];
+			flushOutCount = thisCommandFlushes ? flushOutCount + 1 : flushOutCount;
+			flushOutHotVector[i] <== thisCommandFlushes ? owner.constant.var(true) : owner.constant.var(false);
+		}
+		DFEVector<DFEStruct> lmemRes = NHotMux.mux(flushOutHotVector, lmemResOutput);
+		for (int i = 0; i <nFlushScheds; i++ ) {
+		}
+
+		VariableWidthIO.output("lmemres", lmemRes, flushOutCount, utils.getResToUpdateDataStructType().getTotalBits()*nFlushScheds, doFlush);
+
+		// Do any partial output to pcie
+		DFEVectorType<DFEVar> pcieHotVectorType = new DFEVectorType<DFEVar>(Kernel.dfeBool(),nScheds);
+		DFEVectorType<DFEStruct> buffSchedVectorType = new DFEVectorType<DFEStruct>(utils.getResBufferScheduleType(), nScheds);
+		DFEVectorType<DFEStruct> flushBuffSchedVectorType = new DFEVectorType<DFEStruct>(utils.getResFlushBufferScheduleType(), nScheds);
+
+		DFEVar pcieCount = owner.constant.zero(schedIndexType);
+		DFEVector<DFEVar> pcieHotVector = pcieHotVectorType.newInstance(owner);
+		DFEVector<DFEStruct> bufferScheds = buffSchedVectorType.newInstance(owner);
+		DFEVector<DFEStruct> flushingInScheds = flushBuffSchedVectorType.newInstance(owner);
+		for (int i = 0; i < nScheds; i++){
+			DFEVar thisInputSelectCommand = scheds[i][AirfoilDFEUtils.inputSelectTag];
+			DFEStruct thisBufferCommand = scheds[i][AirfoilDFEUtils.bufferCommandTag];
+			DFEStruct thisFlushingInCommand  = scheds[i][AirfoilDFEUtils.flushBufferCommandTag];
+
+			bufferScheds[i] <== thisBufferCommand;
+			flushingInScheds[i] <== thisFlushingInCommand;
+
+			pcieCount = (thisInputSelectCommand === AirfoilDFEUtils.InputSelectCommand.READ_PCIE) ?
+			                                        (pcieCount + 1) : pcieCount;
+
+			pcieHotVector[i] <== (thisInputSelectCommand === AirfoilDFEUtils.InputSelectCommand.READ_PCIE) ?
+			                                                 owner.constant.var(true) : owner.constant.var(false);
+		}
+
+		DFEVector<DFEStruct> pciepartres = NHotMux.mux(pcieHotVector, data);
+		VariableWidthIO.output("cpupartres", pciepartres, pcieCount, utils.getResToCPUDataStructType().getTotalBits()*nScheds, doFlush);
+
+		//Populate the flushing buffer
+		DFEVectorType<DFEStruct> flushDataVectorType = new DFEVectorType<DFEStruct> (utils.getResToUpdateDataStructType(), nScheds);
+		DFEVector<DFEStruct> flushData = flushDataVectorType.newInstance(owner);
+		for (int i = 0; i < nScheds; i++) {
+			flushData[i]["res"] <== data[i]["res"];
+			flushData[i]["adt"] <== passedInput[i]["adt"];
+		}
+		AccumulatingMultiBankBuffer<DFEStruct> outputBank = new AccumulatingMultiBankBuffer<DFEStruct>(owner, utils.getResToUpdateDataStructType(), utils.getNumBuff(), utils.getBuffDepth(), 4);
+		DFEVector<DFEVector<DFEStruct>> lmemResComponents = outputBank.port(flushData, bufferScheds);
+		flushingBuffer.write(lmemResComponents,flushingInScheds);
+	}
+}

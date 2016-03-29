@@ -1,0 +1,122 @@
+package airfoildfe;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import maxpower.kernel.utils.VectorUtils;
+
+import com.maxeler.maxcompiler.v2.errors.MaxCompilerAPIError;
+import com.maxeler.maxcompiler.v2.kernelcompiler.Kernel;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelLib;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.Bitops;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.KernelObjectVectorizable;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEVar;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVector;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVectorType;
+import com.maxeler.maxcompiler.v2.utils.MathUtils;
+
+/**
+ * A way to, with one function call, demux a variable amount per tick of valid data from the start of a wide input to some hot positions, or the inverse (mux).
+ *
+ * @author David Packwood
+ *
+ */
+public class NHotMux {
+	/**
+	 * @param select A vector of DFEBool some amount of which are hot (the positions where valid data end up), the mapping is monotonic.
+	 * @param input A wide vector with some variable amount of valid data which is positioned at the beginning of the input.
+	 * @param numValid The number of valid data in the input (should be equal to the sum of the number of hot elements in hotVector,
+	 * this is not checked for internally)
+	 * @return A vector of data with the valid data at the hot positions, the data at the unhot positions is undefined.
+	 *
+	 * An example use case could be dynamic load balancing, consider a design with an array of N compute pipes, each with an internal loop which has
+	 * non-zero latency (so cannot receive new input every cycle) and data is arriving at a non constant rate. When a pipe is ready for a new input
+	 * it is hot and some new input data is demuxed to it.
+	 */
+	public static <T extends KernelObjectVectorizable<T, ?>> DFEVector<T> demux(DFEVector<DFEVar> select, DFEVector<T> input,
+	                                                                            DFEVar numValid) {
+
+		if (input.getSize() != select.getSize()) {
+			throw new MaxCompilerAPIError("Width of data input and hot input must be the same.");
+		}
+
+		Kernel owner = input.getKernel();
+		DFEVar myZero = owner.constant.var(0);
+		DFEVector<T> output = demuxRotateAndPlace(input, select, myZero, numValid);
+		return output;
+	}
+
+	/**
+	 * @param select A vector of DFEBool, some amount of which are hot (the positions of the valid data in the input)
+	 * @param input A wide vector with some variable amount of valid data which is located at the hot positions.
+	 * @return A vector of data with the valid data at the beginning, mapped monotonically from the valid input data, the data past numValid is not defined.
+	 */
+	public static <T extends KernelObjectVectorizable<T, ?>> DFEVector<T> mux(DFEVector<DFEVar> select, DFEVector<T> input) {
+
+		if (input.getSize() != select.getSize()) {
+			throw new MaxCompilerAPIError("Width of data input and hot input must be the same.");
+		}
+		Kernel owner = select.getKernel();
+		List<T> outputAsList = muxAndSlice(input.getElementsAsList(), select.pack());
+		DFEVector<T> output = input.getType().newInstance(owner, outputAsList);
+		return output;
+	}
+
+	private static <T extends KernelObjectVectorizable<T, ?>>
+	DFEVector<T> demuxRotateAndPlace(DFEVector<T> remainingInput, DFEVector<DFEVar> remainingHotVector, DFEVar validStart, DFEVar validRemaining) {
+
+		if (remainingInput.getSize() == 1) {
+			remainingHotVector.setReportOnUnused(false);
+			validStart.setReportOnUnused(false);
+			validRemaining.setReportOnUnused(false);
+			return remainingInput;
+		} else {
+			int remainingWidth = remainingInput.getSize();
+
+			DFEVar getData = remainingHotVector[0];
+			DFEType shiftType = KernelLib.dfeUInt(MathUtils.bitsToAddress(remainingWidth));
+			DFEVar shift = getData ? validStart.cast(shiftType) : (validStart.cast(shiftType) + validRemaining.cast(shiftType));
+			DFEVector<T> shiftedInput = remainingInput.rotateElementsRight(shift);
+
+			T thisData = shiftedInput[0];
+
+			DFEVector<T> dataToPass = VectorUtils.slice(shiftedInput,1,remainingWidth-1);
+			DFEVector<DFEVar> hotToPass = VectorUtils.slice(remainingHotVector,1,remainingWidth-1);
+
+			DFEVar validStartToPass = getData ? 0 : (remainingWidth - 1 - validRemaining);
+			DFEVar validRemainingToPass = getData ? (validRemaining - 1) : validRemaining;
+
+			DFEVector<T> passedData = demuxRotateAndPlace(dataToPass, hotToPass, validStartToPass, validRemainingToPass);
+
+			List<T> dataAsList = passedData.getElementsAsList();
+			List<T> outputAsList = new ArrayList<T>(dataAsList);
+			outputAsList.add(0,thisData);
+			DFEVector<T> output = DFEVectorType.newInstance(outputAsList);
+			return output;
+		}
+	}
+
+	private static <T extends KernelObjectVectorizable<T, ?>> List<T> muxAndSlice(List<T> remainingInput, DFEVar select) {
+		Kernel owner = select.getKernel();
+		if (remainingInput.size() == 1) {
+			select.setReportOnUnused(false);
+			return remainingInput;
+		} else {
+			int remainingWidth = remainingInput.size();
+
+			DFEVar fixSelect = select.cast(KernelLib.dfeUInt(remainingWidth));
+			DFEVar firstValid = Bitops.trailing1Detect(fixSelect);
+			T thisData = owner.control.oneHotMux(firstValid.pack(),remainingInput);
+
+			DFEVar hotToPass = (fixSelect.pack() ^ firstValid.pack()).slice(1, remainingWidth - 1);
+			List<T> dataToPass = remainingInput.subList(1, remainingWidth);
+			List<T> passedData = muxAndSlice(dataToPass, hotToPass);
+
+			List<T> output = new ArrayList<T>();
+			output.add(thisData);
+			output.addAll(passedData);
+			return output;
+		}
+	}
+}

@@ -1,0 +1,56 @@
+Tue 11:19: ########################################## 
+Tue 11:19: Compiling.
+Tue 11:19: ########################################## 
+
+Tue 11:19: MaxCompiler version: 2015.2.
+Tue 11:19: Build DFE run rule for AirfoilDFE start time: Tue Mar 29 11:19:50 BST 2016.
+Tue 11:19: Project location: /home/dpackwood/airfoilapp/AirfoilDFE/APP.
+Tue 11:19: Detailed build log: /home/dpackwood/airfoilapp/AirfoilDFE/APP/RunRules/DFE/build.log.
+
+Tue 11:19: Compiling Engine Code.
+Tue 11:19: Engine building skipped (no selected .max files to build).
+Tue 11:19: Compiling CPU Code.
+Tue 11:19: Run CPU project make files updating
+Tue 11:19: Executing command:
+Tue 11:19: java -jar /network-raid/opt/maxcompiler-2015.2/lib/MaxIDE/projectAdmin.jar -u /home/dpackwood/airfoilapp/AirfoilDFE/APP DFE 
+Tue 11:19: Command output:
+
+Tue 11:19: MaxCompiler Project Admin Tool Version 2015.2.00001
+Tue 11:19:  Copyright Maxeler Technologies 2010 - 2015. All rights reserved.
+Tue 11:19: Handler version 2
+Tue 11:19: Updating RunRule dependent Makefiles for RunRule 'DFE'
+Tue 11:19: 	Updating: DFE
+Tue 11:19: Found makefiles: 1
+Tue 11:19: 	Updated: DFE
+Tue 11:19: Run CPU make.
+Tue 11:19: make RUNRULE=DFE 
+Tue 11:19: Command output:
+Tue 11:19: make -f Makefile.rules build
+Tue 11:19: make[1]: Entering directory `/home/dpackwood/airfoilapp/AirfoilDFE/APP/CPUCode'
+Tue 11:19: make[1]: Nothing to be done for `build'.
+Tue 11:19: make[1]: Leaving directory `/home/dpackwood/airfoilapp/AirfoilDFE/APP/CPUCode'
+Tue 11:19: Build completed: Tue Mar 29 11:19:54 BST 2016
+
+
+Tue 11:19: ########################################## 
+Tue 11:19: Running
+Tue 11:19: ########################################## 
+Tue 11:19: Executing command:
+Tue 11:19: '/home/dpackwood/airfoilapp/AirfoilDFE/APP/RunRules/DFE/binaries/airfoildfe' 
+Tue 11:19: Command output:
+Tue 11:19: reading in grids/decomposed_grid.dat 
+Tue 11:19: Reading subdomain 1
+Tue 11:19: Reading subdomain 2
+Tue 11:19: Reading subdomain 3
+Tue 11:19: Reading subdomain 4
+Tue 11:19: SLiC Error #101 @ topology_internal.c:2902 - Failed to connect; you are running in a hardware environment:
+Tue 11:19: 	* You may need to restart the MaxelerOS daemon.
+Tue 11:19: 	        MaxelerOS daemon error: Socket connect/close failure - Connection refused. Check that the daemon is running.
+Tue 11:19: 	        Socket: (null)
+Tue 11:19: 	* If you intended to simulate, check your $MAXELEROSDIR and $PRELOAD environment settings,
+Tue 11:19: 	  and ensure that the simulation daemon is running.
+Tue 11:19: SLiC Error #506 @ singlet_internal.c:159 - Unable to initialise topology pool
+Tue 11:19: SLiC Error #526 @ singlet_internal.c:271 - Unable to allocate engine
+Tue 11:19: SLiC Error #518 @ engine.c:26 - Error reported from function "max_load".
+Tue 11:19: Process terminated with exit code -1.
+Tue 11:19: Aborted

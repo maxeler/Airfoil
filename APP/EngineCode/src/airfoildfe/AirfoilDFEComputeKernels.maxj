@@ -1,0 +1,169 @@
+package airfoildfe;
+
+import maxpower.kernel.io.AspectChangeIO;
+
+import com.maxeler.maxcompiler.v2.kernelcompiler.Kernel;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelParameters;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.KernelMath;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEVar;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStruct;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVector;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVectorType;
+
+
+class AirfoilDFEAdtKernel extends Kernel {
+
+	protected AirfoilDFEAdtKernel(KernelParameters params, AirfoilDFEUtils utils){
+		super(params);
+
+
+
+		DFEVar cfl = io.scalarInput("cfl",utils.getFloatType());
+		DFEVar gam = io.scalarInput("gam",utils.getFloatType());
+		DFEVar gm1 = io.scalarInput("gm1",utils.getFloatType());
+
+		DFEVector<DFEVar> q = io.input("q",utils.getCellDataType());
+		DFEVector<DFEVar> dx = io.input("dx",utils.getADTEdgeSetType());
+
+		DFEVar adt = adt_calc(dx, q, cfl, gam, gm1);
+		DFEStruct throughput = utils.getAdtToResDataStructType().newInstance(this);
+		throughput["q"] <== q;
+		throughput["adt"] <== adt;
+
+		DFEVar numTicks = io.scalarInput("numTicks", dfeUInt(32));
+		DFEVar count = control.count.makeCounterChain().addCounter(numTicks, 1);
+		DFEVar doFlush = (count === numTicks-1);
+		AspectChangeIO resacio = new AspectChangeIO(this, utils.getAdtToResDataStructType().getTotalBits()*utils.getResPipes()*2);
+		resacio.output("qpadt", throughput, constant.var(true), doFlush);
+	}
+
+	protected DFEVar adt_calc(DFEVector<DFEVar> dx, DFEVector<DFEVar> q, DFEVar cfl, DFEVar gam, DFEVar gm1){
+
+		DFEVar ri = 1.0/q[0];
+		DFEVar u = ri*q[1];
+		DFEVar v = ri*q[2];
+		DFEVar c = KernelMath.sqrt( gam*gm1*(ri*q.get(3) - 0.5*(u*u+v*v)));
+
+		DFEVar adt1 = KernelMath.abs(u*dx[1]   - v*dx[0]  ) + c*dx[2];
+		DFEVar adt2 = KernelMath.abs(u*dx[1+3] - v*dx[0+3]) + c*dx[2+3];
+		DFEVar adt3 = KernelMath.abs(u*dx[1+6] - v*dx[0+6]) + c*dx[2+6];
+		DFEVar adt4 = KernelMath.abs(u*dx[1+9] - v*dx[0+9]) + c*dx[2+9];
+
+		DFEVar adt = (adt1 + adt2 + adt3 + adt4)/cfl;
+		return adt;
+	}
+}
+
+class AirfoilDFEResKernel extends Kernel{
+
+	protected AirfoilDFEResKernel(KernelParameters params, AirfoilDFEUtils utils){
+		super(params);
+
+		AspectChangeIO lmemacio = new AspectChangeIO(this,3072);
+
+		DFEVar gm1 = io.scalarInput("gm1",utils.getFloatType());
+		DFEVar eps = io.scalarInput("eps",utils.getFloatType());
+
+		DFEStruct readOnlyData = lmemacio.input("readOnly", utils.getResReadOnlyType());
+		DFEVector<DFEStruct> scheds = readOnlyData[AirfoilDFEUtils.resSchedulesTag];
+		DFEVector<DFEStruct> paddedflushScheds = readOnlyData[AirfoilDFEUtils.resFlushSchedulesTag];
+		DFEVectorType<DFEStruct> flushSchedsType = new DFEVectorType<DFEStruct> (utils.getResFlushBufferScheduleType(), utils.getFlushPipes());
+		DFEVector<DFEStruct> flushScheds = flushSchedsType.newInstance(this);
+		for (int i = 0; i < utils.getFlushPipes(); i++) flushScheds[i] <== (DFEStruct) paddedflushScheds[i]["schedule"];
+		DFEVector<DFEVector<DFEVar>> dx0s = readOnlyData[AirfoilDFEUtils.resDxsTag];
+
+		DFEVector<DFEStruct> cellData = AirfoilDFEFusion.fuseInputs(utils, scheds);
+
+		DFEVector<DFEStruct> output = (new DFEVectorType<DFEStruct>(utils.getResToCPUDataStructType(), 2*utils.getResPipes())).newInstance(this);
+		for (int i = 0; i < utils.getResPipes(); i++){
+			int thisCellZero = 2*i;
+			int thisCellOne  = 2*i+1;
+
+			DFEVector<DFEVar> dx0 = dx0s[i];
+			DFEVector<DFEVar> q0 = cellData[thisCellZero]["q"];
+			DFEVector<DFEVar> q1 = cellData[thisCellOne ]["q"];
+			DFEVar adt0 = cellData[thisCellZero]["adt"];
+			DFEVar adt1 = cellData[thisCellOne ]["adt"];
+
+			DFEVector<DFEVector<DFEVar>> res = res_calc(utils, dx0, q0, q1, adt0, adt1, gm1, eps);
+
+			output[2*i]["res"]   <== res[0];
+			output[2*i+1]["res"] <== res[1];
+		}
+
+		AirfoilDFEFusion.fanOutputs(output, cellData, utils, scheds, flushScheds);
+	}
+
+	protected DFEVector<DFEVector<DFEVar>> res_calc(AirfoilDFEUtils utils, DFEVector<DFEVar> dx0, DFEVector<DFEVar> q0, DFEVector<DFEVar> q1, DFEVar adt0, DFEVar adt1, DFEVar gm1, DFEVar eps) {
+
+		DFEVar ri0 = 1.0/q0[0];
+		DFEVar p0 = gm1*(q0[3] - 0.5*ri0*(q0[1]*q0[1] + q0[2]*q0[2]));
+		DFEVar vol0 = ri0*(q0[1]*dx0[1]-q0[2]*dx0[0]);
+
+		DFEVar ri1 = 1.0/q1[0];
+		DFEVar p1 = gm1*(q1[3] - 0.5*ri1*(q1[1]*q1[1] + q1[2]*q1[2]));
+		DFEVar vol1 = ri1*(q1[1]*dx0[1]-q1[2]*dx0[0]);
+
+		DFEVar mu = 0.5*(adt0 + adt1)*eps;
+
+		DFEVar f0 = 0.5*(vol0*q0[0]      + vol1*q1[0])                               + mu*(q0[0] - q1[0]);
+		DFEVar f1 = 0.5*(vol0*q0[1]      + vol1*q1[1]       + p0*dx0[1] + p1*dx0[1]) + mu*(q0[1] - q1[1]);
+		DFEVar f2 = 0.5*(vol0*q0[2]      + vol1*q1[2]       - p0*dx0[0] - p1*dx0[0]) + mu*(q0[2] - q1[2]);
+		DFEVar f3 = 0.5*(vol0*(q0[3]+p0) + vol1*(q1[3]+p1))                          + mu*(q0[3] - q1[3]);
+
+		DFEVectorType<DFEVector<DFEVar>> resType = new DFEVectorType<DFEVector<DFEVar>>(utils.getCellDataType(), 2);
+		DFEVector<DFEVector<DFEVar>> res = resType.newInstance(this);
+
+		res[0][0] <==  f0;
+		res[1][0] <== -f0;
+
+		res[0][1] <==  f1;
+		res[1][1] <== -f1;
+
+		res[0][2] <==  f2;
+		res[1][2] <== -f2;
+
+		res[0][3] <==  f3;
+		res[1][3] <== -f3;
+
+		return res;
+	}
+}
+
+class AirfoilDFEUpdateKernel extends Kernel {
+
+	protected AirfoilDFEUpdateKernel(KernelParameters params, AirfoilDFEUtils utils){
+		super(params);
+
+		AspectChangeIO lmemacio = new AspectChangeIO(this,3072);
+		DFEVector<DFEVar> qold  = lmemacio.input("qold",utils.getCellDataType());
+		DFEVar numCells = io.scalarInput("numCells", dfeUInt(32));
+		DFEStruct respadt = io.input("qpadtpres",utils.getResToUpdateDataStructType());
+
+		DFEVar adt = respadt["adt"];
+		DFEVar adti = 1.0/adt;
+
+		DFEVector<DFEVar> res = respadt["res"];
+		DFEVector<DFEVar> q = utils.getCellDataType().newInstance(this);
+
+		DFEVar rms = constant.zero(utils.getFloatType());
+		for (int i = 0; i < 4; i++) {
+			DFEVar del = adti*res[i];
+
+			rms += del*del;
+			q[i] <== qold[i] - del;
+		}
+
+		DFEVar counter = control.count.makeCounterChain().addCounter(numCells, 1);
+		DFEVar doFlush = (counter === numCells-1);
+		lmemacio.output("q", q, constant.var(true), doFlush);
+		DFEVar saveQold = io.scalarInput("doSaveQold", dfeBool());
+		lmemacio.output("saveQold", q, saveQold, doFlush);
+
+		DFEVar partRMS  = utils.getFloatType().newInstance(this);
+		DFEVar lastPartRMS = (counter < 16) ? constant.var(0) : stream.offset(partRMS,-16);
+		partRMS <==  lastPartRMS + rms;
+		DFEVar doOutputRMS = (counter >= numCells-16);
+		io.output("partRMS", partRMS, utils.getFloatType(), doOutputRMS);
+	}
+}

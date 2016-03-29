@@ -1,0 +1,66 @@
+package airfoildfe;
+
+import com.maxeler.maxcompiler.v2.build.EngineParameters;
+import com.maxeler.maxcompiler.v2.managers.BuildConfig.Effort;
+import com.maxeler.maxcompiler.v2.managers.DFEModel;
+
+public class AirfoilDFEEngineParameters extends EngineParameters {
+
+	public AirfoilDFEEngineParameters(String [] args){
+		super(args);
+	}
+
+	private static final String frequency        = "frequency";
+	private static final String lmemFreq         = "lmemFreq";
+	private static final String effortLevel      = "effortLevel";
+	private static final String tag              = "tag";
+
+	private static final String resPipes =           "resPipes";
+	private static final String mainBufferColours =  "mainBufferColours";
+	private static final String mainBufferDepth =    "mainBufferDepth";
+	private static final String flushPipes         = "flushPipes";
+	private static final String flushBufferColours = "flushBufferColours";
+	private static final String flushBufferDepth =   "flushBufferDepth";
+
+	@Override
+	protected void declarations() {
+		declareParam(s_parameterDFE,         DataType.DFEMODEL, DFEModel.MAIA);
+		declareParam(s_parameterMaxFileName, DataType.STRING,  "airfoil");
+		declareParam(s_parameterTarget,      Target.class,     Target.DFE);
+		declareParam(s_parameterEnableMPCX,  DataType.BOOL,    false);
+		declareParam(frequency,              DataType.INT,     150);
+		declareParam(lmemFreq,               DataType.DOUBLE,  400.0);
+		declareParam(effortLevel,            Effort.class,     Effort.VERY_HIGH);
+		declareParam(resPipes,               DataType.INT,     1);
+		declareParam(mainBufferColours,      DataType.INT,     1);
+		declareParam(mainBufferDepth,        DataType.INT,     1);
+		declareParam(flushPipes,             DataType.INT,     1);
+		declareParam(flushBufferColours,     DataType.INT,     1);
+		declareParam(flushBufferDepth,       DataType.INT,     1);
+		declareParam(tag,                    DataType.STRING,  "");
+	}
+
+	public int     getFrequency()        { return getParam(frequency); }
+	public double  getLmemFreq()         { return getParam(lmemFreq); }
+	public String  getTag()              { return getParam(tag); }
+
+	public int getResPipes()           { return getParam(resPipes); }
+	public int getMainBufferColours()  { return getParam(mainBufferColours); }
+	public int getMainBufferDepth()    { return getParam(mainBufferDepth); }
+	public int getFlushPipes()         { return getParam(flushPipes); }
+	public int getFlushBufferColours() { return getParam(flushBufferColours); }
+	public int getFlushBufferDepth()   { return getParam(flushBufferDepth); }
+
+	@Override
+	public String getBuildName() {
+		if (getTarget() == Target.DFE) {
+			return getMaxFileName() + "_" + getDFEModel() + "_" + getTarget() + "_" + makePipeString() + "_FPGA" + getFrequency() + "MHz_DRAM"+ getLmemFreq() +"Mhz_" + getTag();
+		} else {
+			return getMaxFileName() + "_" + getDFEModel() + "_" + getTarget() + "_" + makePipeString();
+		}
+	}
+
+	private String makePipeString() {
+		return getResPipes() + "_" + getMainBufferColours() + "_" + getMainBufferDepth() + "_" + getFlushPipes() + "_" + getFlushBufferColours() + "_" + getFlushBufferDepth();
+	}
+}

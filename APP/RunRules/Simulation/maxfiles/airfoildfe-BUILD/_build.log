@@ -1,0 +1,44 @@
+Thu 15:36: PROGRESS: MaxCompiler version: 2015.2
+Thu 15:36: PROGRESS: Build "airfoildfe" start time: Thu Mar 24 15:36:10 GMT 2016
+Thu 15:36: PROGRESS: Main build process running as user dpackwood on host workstation016
+Thu 15:36: INFO    : Loading build properties from bundled MaxCompiler_build.conf...
+Thu 15:36: INFO    : Loading default build properties from /network-raid/MaxCompiler_build.conf
+Thu 15:36: INFO    : Loading user build properties from: /home/dpackwood/.MaxCompiler_build_user.conf
+Thu 15:36: INFO    : No user-specified external build property file has been specified.
+Thu 15:36: INFO    : (Set environment variable MAXCOMPILER_BUILD_CONF_FILE to assign one)
+Thu 15:36: INFO    : Loading additional parameters from MAXCOMPILER_BUILD_CONF environment variable
+Thu 15:36: PROGRESS: Build location: /scratch/dpackwood/maxdc_builds/24-03-16/airfoildfe_MAIA_DFE_SIM_2_6_500_1_2_100
+Thu 15:36: PROGRESS: Detailed build log available in "_build.log"
+Thu 15:36: INFO    : Created build manager airfoildfe (airfoildfe_MAIA_DFE_SIM_2_6_500_1_2_100 Thu Mar 24 15:36:10 GMT 2016). (15:36:11 24/03/16)
+Thu 15:36: INFO    : Working in dir: /scratch/dpackwood/maxdc_builds/24-03-16/airfoildfe_MAIA_DFE_SIM_2_6_500_1_2_100
+Thu 15:36: INFO    : Java class path (6 paths):
+Thu 15:36: INFO    : 	/home/dpackwood/airfoilapp/AirfoilDFE/APP/EngineCode/bin
+Thu 15:36: INFO    : 	/network-raid/opt/maxcompiler-2015.2/lib/MaxCompiler.jar
+Thu 15:36: INFO    : 	/home/dpackwood/github-maxpower-devel/maxpower-devel/bin
+Thu 15:36: INFO    : 	/network-raid/opt/maxcompiler-2015.2/lib/MaxIDE/plugins/org.junit_4.8.1.v4_8_1_v20100427-1100/junit.jar
+Thu 15:36: INFO    : 	/network-raid/opt/maxcompiler-2015.2/lib/MaxIDE/plugins/org.hamcrest.core_1.1.0.v20090501071000.jar
+Thu 15:36: INFO    : 	/network-raid/opt/maxq/maxq-ctl.jar
+Thu 15:36: INFO    : Java process started by 'main' method in class 'airfoildfe.AirfoilDFEManager'.
+Thu 15:36: INFO    : Using /network-infrastructure/maxcompiler_core_cache/ for core-cache.
+Thu 15:36: INFO    : Using core-cache arbiter bluejet.office.maxeler.com:6189
+Thu 15:36: INFO    : Checking license files in directory: /network-raid/maxeler_licensing/licenses
+Thu 15:36: INFO    : All license signatures valid.
+Thu 15:36: USER    : 
+Thu 15:36: USER    : ENGINE BUILD PARAMETERS
+Thu 15:36: USER    : 	        Build name: airfoildfe_MAIA_DFE_SIM_2_6_500_1_2_100
+Thu 15:36: USER    : 	          DFEModel: MAIA                                   
+Thu 15:36: USER    : 	       maxFileName: airfoildfe                             
+Thu 15:36: USER    : 	            target: DFE_SIM                                
+Thu 15:36: USER    : 	        enableMPCX: false                                  
+Thu 15:36: USER    : 	         frequency: 150                                    
+Thu 15:36: USER    : 	          lmemFreq: 400.0                                  
+Thu 15:36: USER    : 	       effortLevel: VERY_HIGH                              
+Thu 15:36: USER    : 	          resPipes: 2                                      
+Thu 15:36: USER    : 	 mainBufferColours: 6                                      
+Thu 15:36: USER    : 	   mainBufferDepth: 500                                    
+Thu 15:36: USER    : 	        flushPipes: 1                                      
+Thu 15:36: USER    : 	flushBufferColours: 2                                      
+Thu 15:36: USER    : 	  flushBufferDepth: 100                                    
+Thu 15:36: USER    : 	               tag:                                        
+Thu 15:36: PROGRESS: Instantiating kernel "AirfoilDFEAdtKernel"
+Thu 15:36: PROGRESS: Instantiating kernel "AirfoilDFEResKernel"

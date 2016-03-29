@@ -1,0 +1,65 @@
+Thu 15:36: ########################################## 
+Thu 15:36: Compiling.
+Thu 15:36: ########################################## 
+
+Thu 15:36: MaxCompiler version: 2015.2.
+Thu 15:36: Build Simulation run rule for AirfoilDFE start time: Thu Mar 24 15:36:07 GMT 2016.
+Thu 15:36: Project location: /home/dpackwood/airfoilapp/AirfoilDFE/APP.
+Thu 15:36: Detailed build log: /home/dpackwood/airfoilapp/AirfoilDFE/APP/RunRules/Simulation/build.log.
+
+Thu 15:36: Compiling Engine Code.
+Thu 15:36: Building airfoildfe.max file. 
+Thu 15:36: Setting environment variable:
+Thu 15:36: MAXCOMPILER_BUILD_DIR : /network-scratch/dpackwood/maxdc_builds/
+Thu 15:36: MAX_BUILDPARAMS : DFEModel='MAIA' target='DFE_SIM' maxFileName='airfoildfe' resPipes='2' mainBufferColours='6' mainBufferDepth='500' flushPipes='1' flushBufferColours='2' flushBufferDepth='100'  
+Thu 15:36: Building output:
+Thu 15:36: MaxCompiler version: 2015.2
+Thu 15:36: Build "airfoildfe" start time: Thu Mar 24 15:36:10 GMT 2016
+Thu 15:36: Main build process running as user dpackwood on host workstation016
+Thu 15:36: Build location: /scratch/dpackwood/maxdc_builds/24-03-16/airfoildfe_MAIA_DFE_SIM_2_6_500_1_2_100
+Thu 15:36: Detailed build log available in "_build.log"
+Thu 15:36: 
+Thu 15:36: ENGINE BUILD PARAMETERS
+Thu 15:36: 	        Build name: airfoildfe_MAIA_DFE_SIM_2_6_500_1_2_100
+Thu 15:36: 	          DFEModel: MAIA                                   
+Thu 15:36: 	       maxFileName: airfoildfe                             
+Thu 15:36: 	            target: DFE_SIM                                
+Thu 15:36: 	        enableMPCX: false                                  
+Thu 15:36: 	         frequency: 150                                    
+Thu 15:36: 	          lmemFreq: 400.0                                  
+Thu 15:36: 	       effortLevel: VERY_HIGH                              
+Thu 15:36: 	          resPipes: 2                                      
+Thu 15:36: 	 mainBufferColours: 6                                      
+Thu 15:36: 	   mainBufferDepth: 500                                    
+Thu 15:36: 	        flushPipes: 1                                      
+Thu 15:36: 	flushBufferColours: 2                                      
+Thu 15:36: 	  flushBufferDepth: 100                                    
+Thu 15:36: 	               tag:                                        
+Thu 15:36: Instantiating kernel "AirfoilDFEAdtKernel"
+Thu 15:36: Instantiating kernel "AirfoilDFEResKernel"
+Thu 15:36: 320 1
+
+Thu 15:36: ----------------------------
+Exception in thread "main":
+ 
+  Number of bits must be greater than 0, not 0
+Thu 15:36: 
+Exception Stack Trace com.maxeler.photon.core.PhotonException: 
+   at com.maxeler.photon.types.HWOffsetFix.<init>(HWOffsetFix.java:61)
+   at com.maxeler.photon.types.HWTypeFactory.hwUInt(HWTypeFactory.java:85)
+   at com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFETypeFactory.dfeUInt(DFETypeFactory.java:179)
+   at com.maxeler.maxcompiler.v2.kernelcompiler.KernelLib.dfeUInt(KernelLib.java:264)
+   at maxpower.kernel.io.VariableWidthIO.makeOutput(VariableWidthIO.maxj:173)
+   at maxpower.kernel.io.VariableWidthIO.output(VariableWidthIO.maxj:145)
+   at airfoildfe.AirfoilDFEFusion.fanOutputs(AirfoilDFEFusion.maxj:116)
+   at airfoildfe.AirfoilDFEResKernel.<init>(AirfoilDFEComputeKernels.maxj:94)
+   at airfoildfe.AirfoilDFEManager.makeResBlock(AirfoilDFEManager.maxj:93)
+   at airfoildfe.AirfoilDFEManager.<init>(AirfoilDFEManager.maxj:58)
+   at airfoildfe.AirfoilDFEManager.main(AirfoilDFEManager.maxj:126)
+----------------------------
+Thu 15:36: Building: airfoildfe.max file finished.
+Thu 15:36: Build process failed while trying to create airfoildfe.max file
+Thu 15:36: null
+Thu 15:36: Build failed: Thu Mar 24 15:36:13 GMT 2016
+
+

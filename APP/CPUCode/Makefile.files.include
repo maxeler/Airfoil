@@ -1,0 +1,5 @@
+#
+# This file is managed by MaxIDE. Do NOT change.
+#
+HEADERS:= AirfoilDFEDomain.h AirfoilDFEInterface.h adt_calc.h bres_calc.h res_calc.h save_soln.h update.h 
+SOURCES:= AirfoilDFE.cpp AirfoilDFEDomain.cpp AirfoilDFEInterface.cpp 

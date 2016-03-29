@@ -1,0 +1,123 @@
+package airfoildfe;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import maxpower.kernel.mem.ZeroLatencyMemory;
+import maxpower.kernel.utils.VectorUtils;
+
+import com.maxeler.maxcompiler.v2.errors.MaxCompilerAPIError;
+import com.maxeler.maxcompiler.v2.kernelcompiler.Kernel;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelLib;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.Bitops;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.KernelObjectVectorizable;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.KernelType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFETypeFactory;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEVar;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStruct;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStructType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVector;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVectorType;
+import com.maxeler.maxcompiler.v2.utils.MathUtils;
+
+public class AccumulatingMultiBankBuffer<T extends KernelObjectVectorizable<T,?>> extends KernelLib{
+
+	public static final String bankIdTag = "bankID";
+	public static final String bankAddressTag = "bankIndex";
+	public static final String readAccessTag = "readEnable";
+	public static final String writeAccessTag = "writeEnable";
+
+	public static final String dataValuesTag = "dataValues";
+	public static final String dataCountTag = "dataCount";
+
+	private final int numBanks;
+	private final int bankDepth;
+	private final List<ZeroLatencyMemory<DFEStruct>> banks;
+	private final KernelType<T> type;
+	private final KernelLib parent;
+	private final DFEStructType accumulatingStructType;
+	private final DFEVectorType<T> dataVecType;
+
+
+	public AccumulatingMultiBankBuffer(KernelLib owner, KernelType<T> dataType, int nBanks, int depth, int maxAccumulates) {
+		super(owner);
+		parent = owner;
+		numBanks = nBanks;
+		bankDepth = depth;
+		type = dataType;
+		dataVecType = new DFEVectorType<T>(type,maxAccumulates);
+
+		DFEStructType.StructFieldType dataValues = DFEStructType.sft(dataValuesTag, dataVecType);
+		DFEStructType.StructFieldType dataCount = DFEStructType.sft(dataCountTag, KernelLib.dfeUInt(MathUtils.bitsToRepresent(maxAccumulates)));
+		accumulatingStructType = new DFEStructType(dataValues,dataCount);
+
+		banks = new ArrayList<ZeroLatencyMemory<DFEStruct>>();
+		for (int i = 0; i < numBanks; i++) banks.add(ZeroLatencyMemory.alloc(parent, accumulatingStructType, bankDepth));
+
+	}
+	public DFEVector< DFEVector<T>> port(DFEVector<T> dataIn, DFEVector<DFEStruct> accessCommands){
+		Kernel owner = dataIn.getKernel();
+		int numInputs = accessCommands.getSize();
+		if (numInputs < 1)
+			throw new MaxCompilerAPIError("Number of input data items must be greater than 0");
+		if (dataIn.getSize() != numInputs)
+			throw new MaxCompilerAPIError("Number of input data items must equal the number of access commands");
+
+		DFEVectorType<DFEVar> selectorType = new DFEVectorType<DFEVar>(DFETypeFactory.dfeBool(), numInputs);
+		DFEVectorType<DFEVector<T>> dataFromBanksType = new DFEVectorType<DFEVector<T>>(dataVecType, numBanks);
+		DFEVector<DFEVector<T>> dataFromBanks = dataFromBanksType.newInstance(parent);
+
+		for (int i = 0; i < numBanks; i++) {
+
+			DFEVector<DFEVar> readSelector = selectorType.newInstance(parent);
+			for (int j = 0; j < numInputs; j++) {
+				DFEVar bankIdMatch = ((DFEVar) accessCommands[j][bankIdTag]) === i;
+				readSelector[j] <== bankIdMatch & (((DFEVar) accessCommands[j][readAccessTag]) === 1);
+			}
+			DFEVar readSelectorPacked = readSelector.pack();
+			DFEVar oneHotReadSelect = DFETypeFactory.dfeUInt(numInputs).unpack(readSelectorPacked);
+			DFEVar readSelect = Bitops.leading1Detect(oneHotReadSelect);
+			DFEStruct readMemCommandPerBank = parent.control.oneHotMux(readSelect, accessCommands.getElementsAsList());
+			DFEVar address = (DFEVar) readMemCommandPerBank[bankAddressTag];
+
+			//TODO: This section has a biggish latency and needs to be squashed to zero, this is worrying for timing on large numbers of pipes
+			optimization.pushPipeliningFactor(0);
+			DFEStruct dataFromBank = banks[i].read(address);
+			DFEVar thisCount = dataFromBank[dataCountTag];
+			List<DFEVector<T>> thisData = new ArrayList<DFEVector<T>>(numInputs);
+			DFEVector<T> dataFromBankAsVector = dataFromBank[dataValuesTag];
+			thisData.add(dataFromBankAsVector);
+			for (int j = 0; j < numInputs; j++){
+				thisCount = readSelector[j] ? thisCount + 1 : thisCount;
+				DFEVector<T> thisNextData = dataVecType.newInstance(owner);
+				DFEVector<T> shiftedVector = VectorUtils.rotate(thisData[j],1);
+				thisNextData[0] <== readSelector[j] ? dataIn[j] : thisData[j][0];
+				for (int k = 1; k < thisNextData.getSize(); k++) thisNextData[k] <== readSelector[j] ? shiftedVector[k] : thisData[j][k];
+				thisData.add(thisNextData);
+			}
+			DFEStruct dataToBank = accumulatingStructType.newInstance(owner);
+			dataToBank[dataCountTag] <== thisCount;
+			dataToBank[dataValuesTag] <== thisData[numInputs];
+			banks[i].write(address, dataToBank, constant.var(true));
+			optimization.popPipeliningFactor();
+
+			dataFromBanks[i] <== thisData[numInputs];
+		}
+
+		int numOutputs = accessCommands.getSize();
+		DFEVector< DFEVector<T> > output = new DFEVectorType<DFEVector<T>>(dataVecType, numOutputs).newInstance(parent);
+		for (int j = 0; j < numOutputs; j++) {
+			DFEVar bankId = (DFEVar)accessCommands[j][bankIdTag];
+			output[j] <== parent.control.mux(bankId, dataFromBanks.getElementsAsList());
+		}
+		return output;
+	}
+
+	public static DFEStructType getAccessCommandType(int numBanks, int bankDepth) {
+		DFEStructType.StructFieldType bankID    = DFEStructType.sft(bankIdTag, DFETypeFactory.dfeUInt(MathUtils.bitsToAddress(numBanks)));
+		DFEStructType.StructFieldType bankIndex = DFEStructType.sft(bankAddressTag, DFETypeFactory.dfeUInt(MathUtils.bitsToAddress(bankDepth)));
+		DFEStructType.StructFieldType bankRead  = DFEStructType.sft(readAccessTag, DFETypeFactory.dfeBool());
+		DFEStructType.StructFieldType bankWrite = DFEStructType.sft(writeAccessTag, DFETypeFactory.dfeBool());
+		return new DFEStructType(bankID, bankIndex, bankRead, bankWrite);
+	}
+}

@@ -1,0 +1,235 @@
+package airfoildfe;
+
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelLib;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEVar;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStruct;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStructType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVector;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVectorType;
+import com.maxeler.maxcompiler.v2.utils.MathUtils;
+
+
+
+class AirfoilDFEUtils{
+
+	public static String inputSelectTag = "inputSelect";
+	public static String bufferCommandTag = "bufferCommand";
+	public static String flushBufferCommandTag = "flushBufferCommand";
+
+
+	public static String resSchedulesTag = "resSchedulesTag";
+	public static String resFlushSchedulesTag = "resFlushSchedulesTag";
+	public static String resDxsTag = "resDxsTag";
+
+	private final int resPipes;
+	private final int flushPipes;
+
+	private final int numBuff;
+	private final int buffDepth;
+
+	private final int numFlushBuff;
+	private final int flushBuffDepth;
+
+	private final int nMainSchedulePaddingBits;
+	private final int nFlushSchedulePaddingBits;
+
+	private final DFEType floatType;
+	private final DFEType rawUnsignedIntegralType;
+	private final DFEType inputSelectType;
+
+	private final DFEStructType adtToResDataStructType;
+	private final DFEStructType resToUpdateDataStructType;
+	private final DFEStructType resToCPUDataStructType;
+
+
+	private final int qpadtPortWidthInBytes;
+
+	private final DFEStructType resBufferScheduleStructType;
+	private final DFEStructType resFlushBufferScheduleStructType;
+	private final DFEStructType paddedResFlushBufferScheduleStructType;
+	private final DFEStructType resScheduleStructType;
+	private final DFEVectorType<DFEStruct> resSchedulesType;
+	private final DFEVectorType<DFEStruct> resFlushSchedulesType;
+	private final DFEStructType resReadOnlyStructType;
+
+	private final DFEVectorType<DFEVar> edgeDataType;
+	private final DFEVectorType<DFEVar> cellDataType;
+	private final DFEVectorType<DFEVar> adtEdgeSetType;
+	private final DFEVectorType<DFEVector<DFEVar>> resEdgeSetType;
+
+	public static enum InputSelectCommand {
+		READ_PCIE(1),
+		READ_BUFFER(0);
+
+		private int val;
+		InputSelectCommand(int x){
+			val = x;
+		}
+
+		DFEVar eq (DFEVar other) {
+			return (other === val);
+		}
+
+		DFEVar neq (DFEVar other) {
+			return (other !== val);
+		}
+
+		DFEVar eqAsRHS (DFEVar other) {
+			return (other === val);
+		}
+
+		DFEVar neqAsRHS (DFEVar other) {
+			return (other !== val);
+		}
+	}
+
+	public static enum BufferRWCommand {
+		READ(0),
+		WRITE_THEN_READ(1),
+		WRITE(2);
+
+		private int val;
+		BufferRWCommand(int x){
+			val = x;
+		}
+
+		DFEVar eq (DFEVar other) {
+			return (other === val);
+		}
+
+		DFEVar neq (DFEVar other) {
+			return (other !== val);
+		}
+
+		DFEVar eqAsRHS (DFEVar other) {
+			return (other === val);
+		}
+
+		DFEVar neqAsRHS (DFEVar other) {
+			return (other !== val);
+		}
+	}
+
+	public static enum FlushBufferRWCommand {
+		DO_NOTHING(0),
+		ACCESS(1);
+
+		private int val;
+		FlushBufferRWCommand(int x){
+			val = x;
+		}
+
+		DFEVar eq (DFEVar other) {
+			return (other === val);
+		}
+
+		DFEVar neq (DFEVar other) {
+			return (other !== val);
+		}
+
+		DFEVar eqAsRHS (DFEVar other) {
+			return (other === val);
+		}
+
+		DFEVar neqAsRHS (DFEVar other) {
+			return (other !== val);
+		}
+	}
+
+	AirfoilDFEUtils(int resPipesIn, int flushPipesIn, int numBuffIn, int buffDepthIn, int numFlushBuffIn, int flushBuffDepthIn){
+
+		resPipes = resPipesIn;
+		flushPipes = flushPipesIn;
+
+		numBuff = numBuffIn;
+		buffDepth = buffDepthIn;
+		numFlushBuff = numFlushBuffIn;
+		flushBuffDepth = flushBuffDepthIn;
+
+		floatType = KernelLib.dfeFloat(11,53);
+		rawUnsignedIntegralType = KernelLib.dfeUInt(32);
+
+		edgeDataType = new DFEVectorType<DFEVar>(floatType,3);
+		cellDataType = new DFEVectorType<DFEVar>(floatType,4);
+		adtEdgeSetType =  new DFEVectorType<DFEVar>(floatType,12);
+		resEdgeSetType = new DFEVectorType<DFEVector<DFEVar>>(edgeDataType, resPipes);
+
+		DFEStructType.StructFieldType q = DFEStructType.sft("q",cellDataType);
+		DFEStructType.StructFieldType adt = DFEStructType.sft("adt",floatType);
+		adtToResDataStructType = new DFEStructType(q,adt);
+		int qpadtPortWidthInBits = ((adtToResDataStructType.getTotalBits()*2*resPipes - 1)/128 + 1)*128;
+		qpadtPortWidthInBytes = qpadtPortWidthInBits/8;
+
+		DFEStructType.StructFieldType res = DFEStructType.sft("res",cellDataType);
+		resToCPUDataStructType = new DFEStructType(res);
+		resToUpdateDataStructType = new DFEStructType(adt,res);
+
+		resBufferScheduleStructType = MultiBankBuffer.getAccessCommandType(numBuff,buffDepth);
+		resFlushBufferScheduleStructType = MultiBankBuffer.getAccessCommandType(numFlushBuff,flushBuffDepth);
+		int flushScheduleBitsSoFar = resFlushBufferScheduleStructType.getTotalBits();
+		nFlushSchedulePaddingBits = MathUtils.getPadding(flushScheduleBitsSoFar, 8);
+		DFEStructType.StructFieldType flushSchedule = DFEStructType.sft("schedule",resFlushBufferScheduleStructType);
+		DFEStructType.StructFieldType flushSchedulePaddingBits = DFEStructType.sft("paddingBits", KernelLib.dfeRawBits(nFlushSchedulePaddingBits));
+		paddedResFlushBufferScheduleStructType = new DFEStructType(flushSchedule, flushSchedulePaddingBits);
+
+		inputSelectType = KernelLib.dfeBool();
+		DFEStructType.StructFieldType inputSelect = DFEStructType.sft(inputSelectTag, inputSelectType);
+		DFEStructType.StructFieldType bufferCommand = DFEStructType.sft(bufferCommandTag, resBufferScheduleStructType);
+		DFEStructType.StructFieldType flushBufferCommand = DFEStructType.sft(flushBufferCommandTag, resFlushBufferScheduleStructType);
+		int mainScheduleBitsSoFar = resBufferScheduleStructType.getTotalBits() + resFlushBufferScheduleStructType.getTotalBits() + inputSelectType.getTotalBits();
+		nMainSchedulePaddingBits = MathUtils.getPadding(mainScheduleBitsSoFar, 8);
+		//if (nMainSchedulePaddingBits > 0) {
+			DFEStructType.StructFieldType mainSchedulePaddingBits = DFEStructType.sft("paddingBits", KernelLib.dfeRawBits(nMainSchedulePaddingBits));
+			resScheduleStructType = new DFEStructType( bufferCommand, inputSelect, flushBufferCommand, mainSchedulePaddingBits);
+		//} else {
+		//	resScheduleStructType = new DFEStructType( bufferCommand, inputSelect, flushBufferCommand);
+		//}
+
+		resSchedulesType = new DFEVectorType<DFEStruct>(resScheduleStructType, 2*resPipes);
+		resFlushSchedulesType = new DFEVectorType<DFEStruct>(paddedResFlushBufferScheduleStructType, flushPipes);
+		DFEStructType.StructFieldType resSchedules = DFEStructType.sft(resSchedulesTag, resSchedulesType);
+		DFEStructType.StructFieldType resFlushSchedules = DFEStructType.sft(resFlushSchedulesTag, resFlushSchedulesType);
+		DFEStructType.StructFieldType resDxs = DFEStructType.sft(resDxsTag, resEdgeSetType);
+		resReadOnlyStructType = new DFEStructType(resSchedules, resFlushSchedules, resDxs);
+
+	}
+
+	public int getResPipes() {return resPipes;}
+	public int getFlushPipes() {return flushPipes;}
+
+	public int getNumBuff() { return numBuff; }
+	public int getBuffDepth() { return buffDepth; }
+	public int getNumFlushBuff() { return numFlushBuff; }
+	public int getFlushBuffDepth() { return flushBuffDepth; }
+
+	public int getBufferIdBits() {return resBufferScheduleStructType.getTypeForField(MultiBankBuffer.bankIdTag).getTotalBits();}
+	public int getBufferAddressBits() {return resBufferScheduleStructType.getTypeForField(MultiBankBuffer.bankAddressTag).getTotalBits();}
+
+	public int getFlushBufferIdBits() {return resFlushBufferScheduleStructType.getTypeForField(MultiBankBuffer.bankIdTag).getTotalBits();}
+	public int getFlushBufferAddressBits() {return resFlushBufferScheduleStructType.getTypeForField(MultiBankBuffer.bankAddressTag).getTotalBits();}
+
+	public int getResMainSchedulePaddingBits() {return nMainSchedulePaddingBits;}
+	public int getResFlushSchedulePaddingBits() {return nFlushSchedulePaddingBits;}
+
+	public int getResReadOnlyBits() {return resReadOnlyStructType.getTotalBits();}
+
+	public DFEType getFloatType() { return floatType; }
+	public DFEType getRawUnsignedIntegralType() { return rawUnsignedIntegralType; }
+	public DFEVectorType<DFEVar> getEdgeDataType() {return edgeDataType;}
+	public DFEVectorType<DFEVar> getCellDataType() {return cellDataType;}
+	public DFEVectorType<DFEVar> getADTEdgeSetType() {return adtEdgeSetType;}
+	public DFEVectorType<DFEVector<DFEVar>> getResEdgeSetType() {return resEdgeSetType;}
+
+	public DFEStructType getAdtToResDataStructType() {return adtToResDataStructType;}
+	public DFEStructType getResToUpdateDataStructType() {return resToUpdateDataStructType;}
+	public DFEStructType getResToCPUDataStructType() {return resToCPUDataStructType;}
+
+	public DFEStructType getResBufferScheduleType() {return resBufferScheduleStructType;}
+	public DFEStructType getResFlushBufferScheduleType() {return resFlushBufferScheduleStructType;}
+	public DFEStructType getResScheduleType() {return resScheduleStructType;}
+	public DFEStructType getResReadOnlyType() {return resReadOnlyStructType;}
+
+	public int getQpadtPortWidthInBytes() { return qpadtPortWidthInBytes; }
+}
+

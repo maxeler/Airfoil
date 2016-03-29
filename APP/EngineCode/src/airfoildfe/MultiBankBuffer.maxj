@@ -1,0 +1,308 @@
+package airfoildfe;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import maxpower.kernel.io.VariableWidthIO;
+import maxpower.kernel.mem.ZeroLatencyMemory;
+
+import com.maxeler.maxcompiler.v2.errors.MaxCompilerAPIError;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelLib;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.Bitops;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.core.Mem;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.core.Mem.RamWriteMode;
+import com.maxeler.maxcompiler.v2.kernelcompiler.stdlib.memory.Memory;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.KernelObjectVectorizable;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.KernelType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFETypeFactory;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.base.DFEVar;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStruct;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEStructType;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVector;
+import com.maxeler.maxcompiler.v2.kernelcompiler.types.composite.DFEVectorType;
+import com.maxeler.maxcompiler.v2.utils.MathUtils;
+
+/**
+ *   This implements multi-bank FMEM buffer with a scheduled access.
+ *   Multiple inputs and outputs per cycle are supported. The number of banks
+ *   in FMEM may exceed the number of inputs/outputs. Each input and output
+ *   entry is supported by its own scheduling command instructing which FMEM
+ *   bank to read/write at which address.
+ *
+ *
+ *   @author Pavel Burovskiy
+ */
+public class MultiBankBuffer<T extends KernelObjectVectorizable<T,?>> extends KernelLib{
+
+	public static final String bankIdTag = "bankID";
+	public static final String bankAddressTag = "bankIndex";
+	public static final String readAccessTag = "readEnable";
+	public static final String writeAccessTag = "writeEnable";
+
+	private final Mem.RamWriteMode bufferWriteMode;
+	private final int numBanks;
+	private final int bankDepth;
+	private final boolean useZeroLatency;
+	private final KernelType<T> type;
+	private final DFEStructType accessCommandType;
+	private final KernelLib parent;
+	private final List<Memory<T>> banks = new ArrayList<Memory<T>>();
+	private final List<ZeroLatencyMemory<T>> zlbanks = new ArrayList<ZeroLatencyMemory<T>>();
+	//parent.mem.alloc(type, bankDepth);
+
+	/***
+	 *  Create scheduled access buffer for which the number of
+	 *  inputs and outputs equal AND write access schedule simultaneously
+	 *  works as read access schedule: data is put into the buffer for the
+	 *  purpose of the further re-use (in a WRITE_FIRST mode), but the
+	 *  same data must also
+	 *  appear at the output same cycle. Read and write access
+	 *  schedulings are merged into one, with two additional read and write enable
+	 *  boolean flags per scheduling command
+	 *  TODO: rewrite this: 'write enable' state implies both read and write access; 'read' state implies only reads from FMEM.
+	 *  <p>
+	 *  Inputs and outputs are DFEVectors of same size, also the same size as
+	 *  DFEVector of scheduling commands. If <i>n</i> scheduling commands says
+	 *  'write enable' and <i>m</i> commands says 'read', only first <i>n</i>
+	 *  elements of input vector are put into FMEM (accessed in order of their
+	 *  reference by 'write' scheduling commands); the last <i>m</i> elements
+	 *  of input vector are <i>ignored</i>. Please use {@link VariableWidthIO}
+	 *  to read variable number of necessary items per cycle, to form the
+	 *  input to this buffer. The output elements come in order of their
+	 *  reference by both read and write schedule commands.
+	 *  <p>
+	 *  Scheduling command is a DFEStruct which must have the following fields:
+	 *  <ul>
+	 *     <li> {@link: bankIdTag}: the FMEM bank to access; </li>
+	 *     <li> {@link: bankAddressTag}: address within the FMEM bank; </li>
+	 *     <li> {@link: readAccessTag}: boolean flag, as above. </li>
+	 *     <li> {@link: writeAccessTag}: boolean flag, as above. </li>
+	 *  </ul>
+	 *  It may have other fields (ignored by this buffer). Scheduling must
+	 *  comply with the following rules:
+	 *  <p>
+	 *  <ul>
+	 *     <li> If several scheduling commands point to the same FMEM bank,
+	 *          all must have same address, and at most one command is marked 'write enable'.</li>
+	 *     <li> No two write commands use the same FMEM bank.</li>
+	 *  </ul>
+	 *  Non-conforming scheduling implies undefined behaviour.
+	 *  <p>
+	 *  @param  numBanks     number of FMEM banks
+	 *  @param  bufDepth     (maximum) number of entries in each FMEM bank
+	 *  @param  dataIn       vector of input data
+	 *  @param  scheduling   vector of scheduling commands
+	 *  @return DFEVector of data buffered
+	 *  @throws MaxCompilerAPIError  If number of inputs does not match number of scheduling commands
+	 *  @throws MaxCompilerAPIError  If number of inputs exceeds the number of FMEM banks
+	 *  @throws MaxCompilerAPIError  If number of inputs is zero
+	 *  @throws MaxCompilerAPIError  If scheduling command does not have necessary fields
+	 */
+	public MultiBankBuffer(KernelLib owner, KernelType<T> dataType, int nBanks, int depth) {
+	    this(owner, dataType, nBanks, depth, RamWriteMode.WRITE_FIRST, false);
+
+	}
+
+	public MultiBankBuffer(KernelLib owner, KernelType<T> dataType, int nBanks, int depth, boolean useZeroLatencyIn) {
+	    this(owner, dataType, nBanks, depth, RamWriteMode.WRITE_FIRST, useZeroLatencyIn);
+
+	}
+
+	public MultiBankBuffer(KernelLib owner, KernelType<T> dataType, int nBanks, int depth, Mem.RamWriteMode writeMode, boolean useZeroLatencyIn) {
+	    super(owner);
+	    parent = owner;
+	    bufferWriteMode = writeMode;
+	    numBanks = nBanks;
+	    bankDepth = depth;
+	    type = dataType;
+	    accessCommandType = getAccessCommandType(numBanks,bankDepth);
+	    useZeroLatency = useZeroLatencyIn;
+	    if (useZeroLatency) {
+	    	for (int i = 0; i < numBanks; i++) zlbanks.add(ZeroLatencyMemory.alloc(owner, type, bankDepth));
+	    } else {
+	    	for (int i = 0; i < numBanks; i++) banks.add(parent.mem.alloc(type, bankDepth));
+	    }
+	}
+	public DFEVector<T> read(DFEVector<DFEStruct> accessCommands){
+		int numInputs = accessCommands.getSize();
+		if (numInputs < 1)
+			throw new MaxCompilerAPIError("Number of input data items must be greater than 0");
+		if (!accessCommands[0].getType().equals(accessCommandType))
+			throw new MaxCompilerAPIError("Access commands must have the following fields: ["
+			             + bankIdTag + "," + bankAddressTag + "," + readAccessTag + "," + writeAccessTag + "]");
+
+		DFEVectorType<DFEVar> selectorType = new DFEVectorType<DFEVar>(DFETypeFactory.dfeBool(), numInputs);
+
+		DFEVector<T> dataFromBanks = new DFEVectorType<T>(type, numBanks).newInstance(parent);
+		for (int i = 0; i < numBanks; i++) {
+
+			DFEVector<DFEVar> readSelector = selectorType.newInstance(parent);
+			for (int j = 0; j < numInputs; j++) {
+				DFEVar bankIdMatch = ((DFEVar)accessCommands[j][bankIdTag]) === i;
+				readSelector[j] <== bankIdMatch & (((DFEVar)accessCommands[j][readAccessTag]) === 1);
+			}
+
+			DFEVar readSelectorPacked = readSelector.pack();
+			DFEVar oneHotReadSelect = DFETypeFactory.dfeUInt(numInputs).unpack(readSelectorPacked);
+			DFEVar readSelect = Bitops.leading1Detect(oneHotReadSelect);
+			DFEStruct readMemCommandPerBank = parent.control.oneHotMux(readSelect, accessCommands.getElementsAsList());
+
+			DFEVar address = readMemCommandPerBank[bankAddressTag];
+			if (useZeroLatency) {
+				dataFromBanks[i] <== zlbanks[i].read(address);
+			} else {
+				dataFromBanks[i] <== banks[i].read(address);
+			}
+		}
+
+		int numOutputs = accessCommands.getSize();
+		DFEVector<T> output = new DFEVectorType<T>(type, numOutputs).newInstance(parent);
+		for (int j = 0; j < numOutputs; j++) {
+			DFEVar bankId = (DFEVar)accessCommands[j][bankIdTag];
+			if (numBanks > 1) {
+				output[j] <== parent.control.mux(bankId, dataFromBanks.getElementsAsList());
+			} else {
+				output[j] <== dataFromBanks[0];
+			}
+		}
+		return output;
+	}
+
+	public void write(DFEVector<T> dataIn, DFEVector<DFEStruct> accessCommands){
+		int numInputs = accessCommands.getSize();
+		if (numInputs < 1)
+			throw new MaxCompilerAPIError("Number of input data items must be greater than 0");
+		if (dataIn.getSize() != numInputs)
+			throw new MaxCompilerAPIError("Number of input data items must equal the number of access commands");
+		if (!accessCommands[0].getType().equals(accessCommandType))
+			throw new MaxCompilerAPIError("Access commands must have the following fields: ["
+			             + bankIdTag + "," + bankAddressTag + "," + readAccessTag + "," + writeAccessTag + "]");
+
+		DFEVectorType<DFEVar> selectorType = new DFEVectorType<DFEVar>(DFETypeFactory.dfeBool(), numInputs);
+
+		for (int i = 0; i < numBanks; i++) {
+			DFEVector<DFEVar> writeSelector = selectorType.newInstance(parent);
+			for (int j = 0; j < numInputs; j++) {
+				DFEVar bankIdMatch = ((DFEVar)accessCommands[j][bankIdTag]) === i;
+				writeSelector[j] <== bankIdMatch & (((DFEVar)accessCommands[j][writeAccessTag]) === 1);
+			}
+
+			DFEVar writeSelectorPacked = writeSelector.pack();
+			DFEVar oneHotWriteSelect = DFETypeFactory.dfeUInt(numInputs).unpack(writeSelectorPacked);
+			DFEVar writeSelect = Bitops.leading1Detect(oneHotWriteSelect);
+
+			DFEStruct writeMemCommandPerBank = parent.control.oneHotMux(writeSelect, accessCommands.getElementsAsList());
+			DFEVar writeEnable = (writeSelect !== 0) & (((DFEVar)writeMemCommandPerBank[writeAccessTag]) === 1);
+			T dataToWrite = parent.control.oneHotMux(writeSelect, dataIn.getElementsAsList());
+
+			DFEVar address = writeMemCommandPerBank[bankAddressTag];
+			if (useZeroLatency) {
+				zlbanks[i].write(address, dataToWrite, writeEnable);
+			} else {
+				banks[i].write(address, dataToWrite, writeEnable);
+			}
+		}
+	}
+
+	/***
+	 *  If we rename this method to write(...), the read() method would have empty
+	 *  argument set  --- 'cause we use mem.port() in here anyway.
+	 *
+	 *  It makes more sense to add read() method in the future, supporting separate
+	 *  read and write 'schedules'.
+	 */
+	public DFEVector<T> port(DFEVector<T> dataIn, DFEVector<DFEStruct> accessCommands){
+		int numInputs = accessCommands.getSize();
+		if (numInputs > numBanks )
+			throw new MaxCompilerAPIError("Number of FMEM banks must be greater or equal the number of access commands");
+		if (numInputs < 1)
+			throw new MaxCompilerAPIError("Number of input data items must be greater than 0");
+		if (dataIn.getSize() != numInputs)
+			throw new MaxCompilerAPIError("Number of input data items must equal the number of access commands");
+		if (!accessCommands[0].getType().equals(accessCommandType))
+			throw new MaxCompilerAPIError("Access commands must have the following fields: ["
+			             + bankIdTag + "," + bankAddressTag + "," + readAccessTag + "," + writeAccessTag + "]");
+
+		DFEVectorType<DFEVar> selectorType = new DFEVectorType<DFEVar>(DFETypeFactory.dfeBool(), numInputs);
+
+		// TODO slice accessCommands into several DFEVectors
+
+		DFEVector<T> dataFromBanks = new DFEVectorType<T>(type, numBanks).newInstance(parent);
+		for (int i = 0; i < numBanks; i++) {
+			/*
+			 *  Num inputs does not match num banks =>
+			 *  do match bank ids with the list of available banks:
+			 *  preparing for accessing the row of FMEM banks
+			 */
+			DFEVector<DFEVar> readSelector = selectorType.newInstance(parent);
+			DFEVector<DFEVar> writeSelector = selectorType.newInstance(parent);
+			for (int j = 0; j < numInputs; j++) {
+				DFEVar bankIdMatch = ((DFEVar)accessCommands[j][bankIdTag]) === i;
+				// Assuming CPU accessCommands does not allow 2 mem commands to write to the same bank
+				writeSelector[j] <== bankIdMatch & (((DFEVar)accessCommands[j][writeAccessTag]) === 1);
+				readSelector[j] <== bankIdMatch & (((DFEVar)accessCommands[j][readAccessTag]) === 1);
+			}
+
+			// TODO: possible optimisation: shift vector elements so that required element has index 0
+			DFEVar writeSelectorPacked = writeSelector.pack();
+			DFEVar oneHotWriteSelect = DFETypeFactory.dfeUInt(numInputs).unpack(writeSelectorPacked);
+			DFEVar writeSelect = Bitops.leading1Detect(oneHotWriteSelect);
+			DFEStruct writeMemCommandPerBank = parent.control.oneHotMux(writeSelect, accessCommands.getElementsAsList());
+			// If neither mem cmd references this bank, make sure we don't write to it
+			DFEVar writeEnable = (writeSelect !== 0) & (((DFEVar)writeMemCommandPerBank[writeAccessTag]) === 1);
+			T dataToWrite = parent.control.oneHotMux(writeSelect, dataIn.getElementsAsList());
+
+			// If more than one mem cmd request to access this (i-th) bank, choose one;
+			// for the sake of convention, choose memcmd with largest id number
+			DFEVar readSelectorPacked = readSelector.pack();
+			DFEVar oneHotReadSelect = DFETypeFactory.dfeUInt(numInputs).unpack(readSelectorPacked);
+			DFEVar readSelect = Bitops.leading1Detect(oneHotReadSelect);
+			DFEStruct readMemCommandPerBank = parent.control.oneHotMux(readSelect, accessCommands.getElementsAsList());
+
+			// Working around corner case:
+			//  - read and write addresses may not coincide
+			//  - we're forced to use one address for both read and write
+			//  - cannot simply use write address: there may be no write commands in a cycle
+			// => using write address if there's write or read address otherwise
+			DFEVar address = writeEnable? (DFEVar) writeMemCommandPerBank[bankAddressTag]
+			                            : (DFEVar) readMemCommandPerBank[bankAddressTag];
+
+			if (useZeroLatency) {
+				throw new MaxCompilerAPIError("port method not supported for ZeroLatencyMemory");
+			} else {
+				dataFromBanks[i] <== banks[i].port(address, dataToWrite, writeEnable, bufferWriteMode);
+			}
+		}
+
+		int numOutputs = accessCommands.getSize();
+		DFEVector<T> output = new DFEVectorType<T>(type, numOutputs).newInstance(parent);
+		for (int j = 0; j < numOutputs; j++) {
+			DFEVar bankId = (DFEVar)accessCommands[j][bankIdTag];
+			if (numBanks > 1) {
+				output[j] <== parent.control.mux(bankId, dataFromBanks.getElementsAsList());
+			} else {
+				output[j] <== dataFromBanks[0];
+			}
+		}
+		return output;
+	}
+
+    /***
+     *  Return the type of access commands expected as input to MultiBankBuffer.
+     *  TODO re-work as a class deriving DFEStructType
+     */
+	public static DFEStructType getAccessCommandType(int numBanks, int bankDepth) {
+		int bankAddressBits = MathUtils.bitsToAddress(numBanks);
+		DFEStructType.StructFieldType bankID;
+		if (bankAddressBits > 0) {
+			bankID = DFEStructType.sft(bankIdTag, DFETypeFactory.dfeUInt(MathUtils.bitsToAddress(numBanks)));
+		} else {
+			bankID = DFEStructType.sft(bankIdTag, dfeUInt(1));
+		}
+		DFEStructType.StructFieldType bankIndex = DFEStructType.sft(bankAddressTag, DFETypeFactory.dfeUInt(MathUtils.bitsToAddress(bankDepth)));
+		DFEStructType.StructFieldType bankRead  = DFEStructType.sft(readAccessTag, DFETypeFactory.dfeBool());
+		DFEStructType.StructFieldType bankWrite = DFEStructType.sft(writeAccessTag, DFETypeFactory.dfeBool());
+		return new DFEStructType(bankID, bankIndex, bankRead, bankWrite);
+	}
+
+} // class MultiBankBuffer

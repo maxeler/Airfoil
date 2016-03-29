@@ -1,0 +1,131 @@
+package airfoildfe;
+
+import com.maxeler.maxcompiler.v2.build.EngineParameters;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelConfiguration;
+import com.maxeler.maxcompiler.v2.kernelcompiler.KernelConfiguration.SimulationOptions.SimulationBehaviour;
+import com.maxeler.maxcompiler.v2.managers.BuildConfig;
+import com.maxeler.maxcompiler.v2.managers.custom.CustomManager;
+import com.maxeler.maxcompiler.v2.managers.custom.DFELink;
+import com.maxeler.maxcompiler.v2.managers.custom.blocks.KernelBlock;
+import com.maxeler.maxcompiler.v2.managers.custom.stdlib.DebugLevel;
+import com.maxeler.maxcompiler.v2.managers.custom.stdlib.LMemCommandGroup;
+import com.maxeler.maxcompiler.v2.managers.custom.stdlib.LMemInterface;
+import com.maxeler.maxcompiler.v2.managers.custom.stdlib.MemoryControllerConfig;
+
+public class AirfoilDFEManager extends CustomManager {
+
+
+//	private static final String schedCastKernelName = "AirfoilDFEScheduleCastKernel";
+//	private static final String flushSchedCastKernelName = "AirfoilDFEFlushScheduleCastKernel";
+
+	private static final String adtKernelName = "AirfoilDFEAdtKernel";
+	private static final String resKernelName = "AirfoilDFEResKernel";
+	private static final String updateKernelName = "AirfoilDFEUpdateKernel";
+
+
+	public AirfoilDFEManager(AirfoilDFEEngineParameters params) {
+		super(params);
+
+		int resPipes = params.getResPipes();
+		int bufferColours = params.getMainBufferColours();
+		int bufferDepth = params.getMainBufferDepth();
+		int flushPipes = params.getFlushPipes();
+		int flushBufferColours = params.getFlushBufferColours();
+		int flushBufferDepth = params.getFlushBufferDepth();
+
+		if (params.getTarget() == EngineParameters.Target.DFE_SIM) debug.setDebugLevel(new DebugLevel().setHasStreamStatus(true));
+
+		//config.setOnCardMemoryFrequency(CustomManager.LMemFrequency.MAX4MAIA_400);
+		config.setOnCardMemoryFrequency(params.getLmemFreq());
+		MemoryControllerConfig mcc = new MemoryControllerConfig();
+		mcc.setBurstSize(8);
+		//mcc.setMAX4qMode(true);
+		mcc.setEnableParityMode(true, true, 72, false);
+		config.setMemoryControllerConfig(mcc);
+		config.setDefaultStreamClockFrequency(params.getFrequency());
+
+		KernelConfiguration kConfig = getCurrentKernelConfig();
+		kConfig.simulation.setRAMAddressCollisionBehaviour(SimulationBehaviour.IGNORE);
+
+		AirfoilDFEUtils utils = new AirfoilDFEUtils(resPipes, flushPipes, bufferColours, bufferDepth, flushBufferColours, flushBufferDepth);
+
+		//Startup Action
+		LMemInterface airfoilLMemInterface = addLMemInterface();
+		airfoilLMemInterface.addStreamToLMem("setupWrite", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D) <== addStreamFromCPU("setupCPU");
+
+		// Main Action
+		DFELink adtToRes = makeAdtBlock(kConfig, utils, airfoilLMemInterface);
+		DFELink resToUpdate = makeResBlock(kConfig, utils, airfoilLMemInterface, adtToRes);
+		makeUpdateBlock(kConfig, utils, airfoilLMemInterface, resToUpdate);
+
+		// Output Action
+		addStreamToCPU("qCPUOut") <== airfoilLMemInterface.addStreamFromLMem("qRead", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D);
+
+		addMaxFileConstant("bufferIDBits", utils.getBufferIdBits());
+		addMaxFileConstant("bufferAddressBits", utils.getBufferAddressBits());
+		addMaxFileConstant("flushBufferIDBits", utils.getFlushBufferIdBits());
+		addMaxFileConstant("flushBufferAddressBits", utils.getFlushBufferAddressBits());
+		addMaxFileConstant("floatBits", utils.getFloatType().getTotalBits());
+		addMaxFileConstant("mainSchedulePaddingBits", utils.getResMainSchedulePaddingBits());
+		addMaxFileConstant("flushSchedulePaddingBits", utils.getResFlushSchedulePaddingBits());
+		addMaxFileConstant("totalResReadOnlyBits", utils.getResReadOnlyBits());
+		addMaxFileConstant("nPipes", utils.getResPipes());
+		addMaxFileConstant("nFlushPipes", utils.getFlushPipes());
+
+
+		addMaxFileConstant("qpadtPortPCIeWidthInBytes", utils.getQpadtPortWidthInBytes());
+		configBuild(params);
+	}
+
+	private DFELink makeAdtBlock(KernelConfiguration kConfig, AirfoilDFEUtils utils, LMemInterface airfoilLmemInterface) {
+
+		KernelBlock adtblock = addKernel(new AirfoilDFEAdtKernel(makeKernelParameters(adtKernelName, kConfig),utils));
+
+		adtblock.getInput("dx") <== airfoilLmemInterface.addStreamFromLMem("adtDxRead", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D);
+		//adtblock.getInput("q") <== addStreamFromCPU("cpu_q_to_adt");
+		adtblock.getInput("q") <== airfoilLmemInterface.addStreamFromLMem("adtQ", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D);
+
+		return adtblock.getOutput("qpadt");
+	}
+
+	private DFELink makeResBlock(KernelConfiguration kConfig, AirfoilDFEUtils utils,  LMemInterface airfoilLMemInterface, DFELink adtToRes) {
+
+		KernelBlock resblock = addKernel(new AirfoilDFEResKernel(makeKernelParameters(resKernelName, kConfig),utils));
+
+		resblock.getInput("readOnly") <== airfoilLMemInterface.addStreamFromLMem("resReadOnly", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D);
+
+		resblock.getInput("adtqpadt") <== adtToRes;
+		resblock.getInput("cpuqpadt") <== addStreamFromCPU("cpu_qpadt_to_res");
+
+		addStreamToCPU("cpu_res_from_res") <== resblock.getOutput("cpupartres");
+		return resblock.getOutput("lmemres");
+	}
+
+	private void makeUpdateBlock(KernelConfiguration kConfig, AirfoilDFEUtils utils, LMemInterface airfoilLMemInterface, DFELink resToUpdate) {
+
+		KernelBlock updateBlock = addKernel(new AirfoilDFEUpdateKernel(makeKernelParameters(updateKernelName,kConfig),utils));
+		updateBlock.getInput("qpadtpres") <== resToUpdate;
+
+		updateBlock.getInput("qold") <== airfoilLMemInterface.addStreamFromLMem("updateQold", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D);
+		airfoilLMemInterface.addStreamToLMem("updateQ", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D) <== updateBlock.getOutput("q");
+		airfoilLMemInterface.addStreamToLMem("updateSaveQold", LMemCommandGroup.MemoryAccessPattern.LINEAR_1D) <== updateBlock.getOutput("saveQold");
+		addStreamToCPU("rmsOut") <== updateBlock.getOutput("partRMS");
+
+	}
+
+	private void configBuild(AirfoilDFEEngineParameters params){
+		BuildConfig buildConfig = getBuildConfig();
+		buildConfig.setMPPRCostTableSearchRange(params.getMPPRStartCT(), params.getMPPREndCT());
+        buildConfig.setMPPRParallelism(params.getMPPRThreads());
+        buildConfig.setMPPRRetryNearMissesThreshold(params.getMPPRRetryThreshold());
+
+	}
+
+	public static void main(String [] args){
+
+		AirfoilDFEManager manager = new AirfoilDFEManager(new AirfoilDFEEngineParameters(args));
+
+		manager.build();
+	}
+
+}
