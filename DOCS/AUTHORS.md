@@ -11,4 +11,4 @@ Development Lead
 Contributors
 ------------
 
-None yet. Why not be the first?
+* Pavel Burovskiy <pburovskiy@maxeler.com>
